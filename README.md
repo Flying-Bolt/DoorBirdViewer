@@ -5,6 +5,18 @@ Ein schlanker Desktop-Viewer für den RTSP-Videostream einer
 
 ![Python](https://img.shields.io/badge/python-3.8%2B-blue)
 ![PyQt5](https://img.shields.io/badge/GUI-PyQt5-green)
+![Platform](https://img.shields.io/badge/Windows-10%2F11-0078D6)
+![License](https://img.shields.io/badge/license-MIT-lightgrey)
+
+## ⬇️ Download
+
+**[➜ DoorBird_Stream_Viewer.exe für Windows herunterladen](https://github.com/Flying-Bolt/DoorBirdViewer/releases/latest/download/DoorBird_Stream_Viewer.exe)**
+
+[![Download](https://img.shields.io/badge/⬇_Download-Windows_.exe-2ea44f?style=for-the-badge&logo=windows)](https://github.com/Flying-Bolt/DoorBirdViewer/releases/latest/download/DoorBird_Stream_Viewer.exe)
+
+Standalone-Anwendung – **keine Python-Installation nötig**. Einfach
+herunterladen, starten und beim ersten Start RTSP- und Licht-URL eintragen.
+Alle Versionen findest du unter [Releases](https://github.com/Flying-Bolt/DoorBirdViewer/releases).
 
 ## Funktionen
 
