@@ -1,0 +1,5 @@
+{
+  "rtsp_url": "rtsp://USER:PASSWORT@IP_ADRESSE/mpeg/media.amp",
+  "light_url": "http://IP_ADRESSE/bha-api/light-on.cgi?http-user=USER&http-password=PASSWORT",
+  "auto_reconnect": false
+}
