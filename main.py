@@ -135,7 +135,6 @@ class SettingsDialog(QDialog):
 # Worker-Thread für den Video-Stream
 # ==========================================
 class VideoThread(QThread):
-    change_pixmap_signal = pyqtSignal(np.ndarray)
     error_signal = pyqtSignal(str)
 
     def __init__(self, rtsp_url):
@@ -143,17 +142,38 @@ class VideoThread(QThread):
         self._run_flag = True
         self.rtsp_url = rtsp_url
         self._cap = None
+        # Frames werden NICHT mehr per Signal an die GUI gereicht (bei 20 fps
+        # kann die Event-Queue sonst unbegrenzt anwachsen, wenn die GUI mit
+        # dem Skalieren nicht nachkommt -> "eingefrorenes" Bild). Stattdessen
+        # liegt hier immer nur der neueste Frame; die GUI holt ihn per Timer.
+        self._lock = threading.Lock()
+        self._latest = None
+        self._seq = 0
 
     # Zeitfenster ohne gueltigen Frame, nach dem die Verbindung als verloren
     # gilt. Einzelne defekte Frames (WLAN) reissen den Stream nicht ab, ein
     # echter Abriss wird aber zuegig erkannt - unabhaengig davon, ob read()
-    # schnell oder erst nach dem FFmpeg-Socket-Timeout (~5 s) fehlschlaegt.
+    # schnell oder erst nach dem Lese-Timeout (~5 s) fehlschlaegt.
     _READ_TIMEOUT_S = 10
 
+    def latest_frame(self):
+        with self._lock:
+            return self._seq, self._latest
+
     def run(self):
-        self._cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+        self._cap = cv2.VideoCapture(
+            self.rtsp_url, cv2.CAP_FFMPEG,
+            # Harte Timeouts im FFmpeg-Backend: open() und read() koennen
+            # damit nie endlos blockieren - der Thread beendet sich nach
+            # stop() garantiert von selbst.
+            [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 10000,
+             cv2.CAP_PROP_READ_TIMEOUT_MSEC, 5000],
+        )
         if not self._cap.isOpened():
-            self.error_signal.emit("Konnte den RTSP-Stream nicht öffnen.")
+            if self._run_flag:
+                self.error_signal.emit("Konnte den RTSP-Stream nicht öffnen.")
+            self._cap.release()
+            self._cap = None
             return
 
         last_ok = time.monotonic()
@@ -161,7 +181,9 @@ class VideoThread(QThread):
             ret, cv_img = self._cap.read()
             if ret:
                 last_ok = time.monotonic()
-                self.change_pixmap_signal.emit(cv_img)
+                with self._lock:
+                    self._latest = cv_img
+                    self._seq += 1
             elif time.monotonic() - last_ok >= self._READ_TIMEOUT_S:
                 if self._run_flag:
                     self.error_signal.emit("Verbindung zum Stream verloren.")
@@ -174,10 +196,15 @@ class VideoThread(QThread):
         self._cap = None
 
     def stop(self):
+        # Nicht blockierend und bewusst KEIN terminate(): TerminateThread auf
+        # einen Thread, der gerade den GIL haelt, friert die komplette App
+        # dauerhaft ein. Dank der CAP_PROP_*-Timeouts kehrt read()/open()
+        # immer zurueck und der Thread beendet sich selbst.
         self._run_flag = False
-        if not self.wait(5000):
-            self.terminate()
-            self.wait()
+        try:
+            self.error_signal.disconnect()
+        except TypeError:
+            pass  # war nicht (mehr) verbunden
 
 
 # ==========================================
@@ -196,6 +223,11 @@ class StreamViewerApp(QMainWindow):
         self.thread = None
         self._last_frame_time = None
         self._stream_started_at = None
+        self._render_seq = 0
+        # Gestoppte Threads, die noch in read()/open() stecken: Referenz
+        # halten bis sie sich selbst beendet haben (sonst Qt-Crash durch
+        # "QThread destroyed while running").
+        self._orphans = []
 
         # Geplanter Auto-Reconnect; wird von stop_stream() abgebrochen, damit
         # ein manueller Stop keinen Neustart mehr ausloest.
@@ -207,6 +239,12 @@ class StreamViewerApp(QMainWindow):
         self._watchdog = QTimer(self)
         self._watchdog.setInterval(2000)
         self._watchdog.timeout.connect(self._check_stream_alive)
+
+        # Holt im GUI-Takt den jeweils neuesten Frame ab (Pull statt Signal-
+        # Flut): die GUI verarbeitet nie mehr Frames, als sie anzeigen kann.
+        self._render_timer = QTimer(self)
+        self._render_timer.setInterval(33)
+        self._render_timer.timeout.connect(self._render_tick)
 
         self.init_ui()
 
@@ -381,9 +419,17 @@ class StreamViewerApp(QMainWindow):
         self.btn_stop.setEnabled(False)
         self._update_light_button_style()
 
-    @pyqtSlot(np.ndarray)
-    def update_image(self, cv_img):
+    def _render_tick(self):
+        if self.thread is None:
+            return
+        seq, frame = self.thread.latest_frame()
+        if frame is None or seq == self._render_seq:
+            return
+        self._render_seq = seq
         self._last_frame_time = time.monotonic()
+        self.update_image(frame)
+
+    def update_image(self, cv_img):
         rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         # Zusammenhaengenden Speicher sicherstellen (manche OpenCV-Frames sind
         # nicht contiguous -> sonst Glitches/Stride-Fehler im QImage).
@@ -405,6 +451,8 @@ class StreamViewerApp(QMainWindow):
 
     @pyqtSlot(str)
     def show_error(self, message):
+        if self.sender() is not None and self.sender() is not self.thread:
+            return  # verspaetete Meldung eines bereits gestoppten Threads
         auto_reconnect = self.chk_reconnect.isChecked()
         self.stop_stream()
         if auto_reconnect:
@@ -419,15 +467,20 @@ class StreamViewerApp(QMainWindow):
         if ref is not None and time.monotonic() - ref > self._WATCHDOG_TIMEOUT_S:
             self.show_error("Stream eingefroren - keine Bilder mehr empfangen.")
 
+    def _reap_orphans(self):
+        self._orphans = [t for t in self._orphans if not t.isFinished()]
+
     def start_stream(self):
         if self.thread is None or not self.thread.isRunning():
+            self._reap_orphans()
             self._reconnect_timer.stop()
+            self._render_seq = 0
             self._last_frame_time = None
             self._stream_started_at = time.monotonic()
             self.thread = VideoThread(self.rtsp_url)
-            self.thread.change_pixmap_signal.connect(self.update_image)
             self.thread.error_signal.connect(self.show_error)
             self.thread.start()
+            self._render_timer.start()
             self._watchdog.start()
             self.btn_play.setEnabled(False)
             self.btn_stop.setEnabled(True)
@@ -435,9 +488,16 @@ class StreamViewerApp(QMainWindow):
     def stop_stream(self):
         self._watchdog.stop()
         self._reconnect_timer.stop()
+        self._render_timer.stop()
         if self.thread is not None:
-            self.thread.stop()
+            t = self.thread
             self.thread = None
+            t.stop()
+            if not t.wait(200):
+                # Steckt evtl. noch in read()/open() - GUI nicht blockieren;
+                # der Thread endet dank der Timeouts von selbst.
+                self._orphans.append(t)
+                t.finished.connect(self._reap_orphans)
         self.image_label.clear()
         self.btn_play.setEnabled(True)
         self.btn_stop.setEnabled(False)
@@ -453,6 +513,13 @@ class StreamViewerApp(QMainWindow):
 
     def closeEvent(self, event):
         self.stop_stream()
+        # Verwaisten Threads kurz Zeit geben, sich selbst zu beenden (max.
+        # ~5 s, durch die Lese-Timeouts garantiert), sonst crasht Qt beim
+        # Zerstoeren eines noch laufenden QThread.
+        deadline = time.monotonic() + 5
+        for t in self._orphans:
+            remaining_ms = int(max(0.0, deadline - time.monotonic()) * 1000)
+            t.wait(max(1, remaining_ms))
         event.accept()
 
 
