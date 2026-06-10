@@ -33,6 +33,8 @@ Alle Versionen findest du unter [Releases](https://github.com/Flying-Bolt/DoorBi
 - **IR-Licht schalten** über die Doorbird `light-on.cgi` HTTP-API.
   - Tagsüber (07–20 Uhr) erscheint eine Sicherheitsrückfrage, nachts wird
     direkt geschaltet.
+- **Türöffner** per konfigurierbarer HTTP-URL (z. B. Tasmota `Power On`) –
+  ein Klick öffnet sofort, ohne Rückfrage.
 - **Auto-Reconnect** (optional): bei Verbindungsabbruch wird nach kurzer
   Wartezeit automatisch neu verbunden.
 - **Toleranz gegen einzelne defekte Frames** – kurze WLAN-Aussetzer reißen
@@ -64,6 +66,7 @@ cp config.example.json config.json
 |------------------|------------------------------------------------------------------|
 | `rtsp_url`       | RTSP-Stream-URL der Doorbird, z. B. `rtsp://user:pass@IP/mpeg/media.amp` |
 | `light_url`      | URL der `light-on.cgi` inkl. `http-user` / `http-password`       |
+| `door_url`       | HTTP-URL des Türöffners, z. B. `http://IP/cm?cmnd=Power%20On`    |
 | `auto_reconnect` | `true`/`false` – automatischer Reconnect bei Verbindungsabbruch  |
 
 > **Hinweis zur Sicherheit:** `config.json` enthält deine Zugangsdaten im
