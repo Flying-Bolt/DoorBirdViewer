@@ -1,6 +1,7 @@
 import sys
 import os
 import json
+import time
 import threading
 import urllib.request
 
@@ -38,6 +39,14 @@ _check_packages()
 # Normale Imports
 # ==========================================
 os.environ["OPENCV_FFMPEG_LOGLEVEL"] = "-8"  # AV_LOG_QUIET
+# RTSP ueber TCP + Socket-Timeout: ohne Timeout blockiert cap.read() nach
+# einem Verbindungsabriss endlos -> Bild friert ein und der Reconnect-Pfad
+# wird nie erreicht. ("stimeout" = aelterer, "timeout" = neuerer FFmpeg-Name;
+# der jeweils unbekannte Schluessel wird ignoriert.)
+os.environ.setdefault(
+    "OPENCV_FFMPEG_CAPTURE_OPTIONS",
+    "rtsp_transport;tcp|stimeout;5000000|timeout;5000000",
+)
 import cv2
 import numpy as np
 from datetime import datetime
@@ -135,29 +144,29 @@ class VideoThread(QThread):
         self.rtsp_url = rtsp_url
         self._cap = None
 
-    # Anzahl aufeinanderfolgender Lese-Fehler, bevor wir die Verbindung als
-    # verloren betrachten. RTSP ueber WLAN liefert gelegentlich einzelne
-    # defekte Frames - die sollen den Stream nicht sofort abreissen lassen.
-    _MAX_READ_FAILURES = 30
+    # Zeitfenster ohne gueltigen Frame, nach dem die Verbindung als verloren
+    # gilt. Einzelne defekte Frames (WLAN) reissen den Stream nicht ab, ein
+    # echter Abriss wird aber zuegig erkannt - unabhaengig davon, ob read()
+    # schnell oder erst nach dem FFmpeg-Socket-Timeout (~5 s) fehlschlaegt.
+    _READ_TIMEOUT_S = 10
 
     def run(self):
-        self._cap = cv2.VideoCapture(self.rtsp_url)
+        self._cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
         if not self._cap.isOpened():
             self.error_signal.emit("Konnte den RTSP-Stream nicht öffnen.")
             return
 
-        failures = 0
+        last_ok = time.monotonic()
         while self._run_flag:
             ret, cv_img = self._cap.read()
             if ret:
-                failures = 0
+                last_ok = time.monotonic()
                 self.change_pixmap_signal.emit(cv_img)
+            elif time.monotonic() - last_ok >= self._READ_TIMEOUT_S:
+                if self._run_flag:
+                    self.error_signal.emit("Verbindung zum Stream verloren.")
+                break
             else:
-                failures += 1
-                if failures >= self._MAX_READ_FAILURES:
-                    if self._run_flag:
-                        self.error_signal.emit("Verbindung zum Stream verloren.")
-                    break
                 # Kurz warten und erneut versuchen (abbrechbar ueber _run_flag).
                 self.msleep(100)
 
@@ -175,11 +184,30 @@ class VideoThread(QThread):
 # Hauptfenster (GUI)
 # ==========================================
 class StreamViewerApp(QMainWindow):
+    # Watchdog: kommt so lange kein Frame an, gilt der Stream als eingefroren
+    # und wird neu gestartet - auch wenn cap.read() im Thread haengt und der
+    # Thread selbst keinen Fehler mehr melden kann.
+    _WATCHDOG_TIMEOUT_S = 15
+
     def __init__(self, config: dict):
         super().__init__()
         self.config = config
         self.is_fullscreen = False
         self.thread = None
+        self._last_frame_time = None
+        self._stream_started_at = None
+
+        # Geplanter Auto-Reconnect; wird von stop_stream() abgebrochen, damit
+        # ein manueller Stop keinen Neustart mehr ausloest.
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.setSingleShot(True)
+        self._reconnect_timer.setInterval(3000)
+        self._reconnect_timer.timeout.connect(self.start_stream)
+
+        self._watchdog = QTimer(self)
+        self._watchdog.setInterval(2000)
+        self._watchdog.timeout.connect(self._check_stream_alive)
+
         self.init_ui()
 
     @property
@@ -355,6 +383,7 @@ class StreamViewerApp(QMainWindow):
 
     @pyqtSlot(np.ndarray)
     def update_image(self, cv_img):
+        self._last_frame_time = time.monotonic()
         rgb_img = cv2.cvtColor(cv_img, cv2.COLOR_BGR2RGB)
         # Zusammenhaengenden Speicher sicherstellen (manche OpenCV-Frames sind
         # nicht contiguous -> sonst Glitches/Stride-Fehler im QImage).
@@ -376,22 +405,36 @@ class StreamViewerApp(QMainWindow):
 
     @pyqtSlot(str)
     def show_error(self, message):
+        auto_reconnect = self.chk_reconnect.isChecked()
         self.stop_stream()
-        if self.chk_reconnect.isChecked():
-            QTimer.singleShot(3000, self.start_stream)
+        if auto_reconnect:
+            self._reconnect_timer.start()
         else:
             QMessageBox.warning(self, "Stream-Fehler", message)
 
+    def _check_stream_alive(self):
+        if self.thread is None or not self.thread.isRunning():
+            return
+        ref = self._last_frame_time or self._stream_started_at
+        if ref is not None and time.monotonic() - ref > self._WATCHDOG_TIMEOUT_S:
+            self.show_error("Stream eingefroren - keine Bilder mehr empfangen.")
+
     def start_stream(self):
         if self.thread is None or not self.thread.isRunning():
+            self._reconnect_timer.stop()
+            self._last_frame_time = None
+            self._stream_started_at = time.monotonic()
             self.thread = VideoThread(self.rtsp_url)
             self.thread.change_pixmap_signal.connect(self.update_image)
             self.thread.error_signal.connect(self.show_error)
             self.thread.start()
+            self._watchdog.start()
             self.btn_play.setEnabled(False)
             self.btn_stop.setEnabled(True)
 
     def stop_stream(self):
+        self._watchdog.stop()
+        self._reconnect_timer.stop()
         if self.thread is not None:
             self.thread.stop()
             self.thread = None
