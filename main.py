@@ -233,7 +233,6 @@ class StreamViewerApp(QMainWindow):
         self._fire_and_forget_get(self.light_url)
 
     def open_door(self):
-        # Sicherheitsabfrage, damit die Tuer nicht versehentlich geoeffnet wird.
         url = self.door_url
         if not url:
             QMessageBox.information(
@@ -241,15 +240,7 @@ class StreamViewerApp(QMainWindow):
                 "Keine Türöffner-URL konfiguriert (⚙ Einstellungen).",
             )
             return
-        reply = QMessageBox.question(
-            self,
-            "Tür öffnen",
-            "Tür jetzt öffnen?",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply == QMessageBox.Yes:
-            self._fire_and_forget_get(url)
+        self._fire_and_forget_get(url)
 
     def trigger_light(self):
         self._update_light_button_style()

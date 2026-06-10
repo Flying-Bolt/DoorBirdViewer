@@ -13,9 +13,10 @@ env/
 build/
 dist/
 *.exe
+*.old
 
 # --- Windows ---
-Thumbs.db
+Thumbs.db*
 *:Zone.Identifier
 desktop.ini
 
