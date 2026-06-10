@@ -18,6 +18,13 @@ Standalone-Anwendung – **keine Python-Installation nötig**. Einfach
 herunterladen, starten und beim ersten Start RTSP- und Licht-URL eintragen.
 Alle Versionen findest du unter [Releases](https://github.com/Flying-Bolt/DoorBirdViewer/releases).
 
+> **Wichtig:** Die Anwendung von einem **lokalen** Laufwerk starten (z. B.
+> `Downloads`), **nicht direkt von einem Netzlaufwerk** – sonst kann Windows
+> den Start blockieren oder mit Fehler `0xc0000142` (DLL-Init) abbrechen.
+> Besonders robust ist die Ordner-Variante
+> [`DoorBird_Stream_Viewer_windows.zip`](https://github.com/Flying-Bolt/DoorBirdViewer/releases/latest/download/DoorBird_Stream_Viewer_windows.zip):
+> lokal entpacken und die `.exe` aus dem Ordner starten.
+
 ## Funktionen
 
 - **Live-RTSP-Stream** der Doorbird-Türstation in einem eigenen Worker-Thread
@@ -66,12 +73,19 @@ cp config.example.json config.json
 ## Eigene .exe bauen (optional)
 
 Mit [PyInstaller](https://pyinstaller.org/) lässt sich eine eigenständige
-Windows-Anwendung erzeugen:
+Windows-Anwendung erzeugen. Empfohlen wird der mitgelieferte **onedir**-Build
+**ohne UPX** (robust gegen `0xc0000142`):
 
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed --icon=Spy.ico --add-data "Spy.png;." main.py
+pyinstaller --clean --noconfirm DoorBird_Stream_Viewer.spec
 ```
+
+Das Ergebnis liegt in `dist/DoorBird_Stream_Viewer/` – den ganzen Ordner lokal
+ausführen. **Bewusst kein `--onefile` und kein UPX:** Eine onefile-EXE entpackt
+sich bei jedem Start nach `%TEMP%` und lädt von dort ihre DLLs, was vom
+Netzlaufwerk bzw. mit Virenscanner zu `0xc0000142` führen kann; UPX zerstört
+zudem häufig Qt5/OpenCV-DLLs.
 
 ## Lizenz
 
