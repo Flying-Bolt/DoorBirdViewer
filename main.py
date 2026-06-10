@@ -62,6 +62,7 @@ _CONFIG_PATH = os.path.join(_BASE_DIR, "config.json")
 _DEFAULT_CONFIG = {
     "rtsp_url":       "rtsp://USER:PASSWORT@IP_ADRESSE/mpeg/media.amp",
     "light_url":      "http://IP_ADRESSE/bha-api/light-on.cgi?http-user=USER&http-password=PASSWORT",
+    "door_url":       "http://192.168.178.91/cm?cmnd=Power%20On",
     "auto_reconnect": False,
 }
 
@@ -69,7 +70,10 @@ def load_config() -> dict:
     if os.path.exists(_CONFIG_PATH):
         try:
             with open(_CONFIG_PATH, "r", encoding="utf-8") as f:
-                return json.load(f)
+                # Defaults zuerst, dann die gespeicherten Werte darueberlegen.
+                # So werden fehlende Schluessel (z. B. door_url in aelteren
+                # config.json) automatisch aus den Defaults ergaenzt.
+                return {**_DEFAULT_CONFIG, **json.load(f)}
         except Exception:
             pass
     return dict(_DEFAULT_CONFIG)
@@ -99,6 +103,10 @@ class SettingsDialog(QDialog):
         self.light_edit.setPlaceholderText("http://ip/bha-api/light-on.cgi?http-user=...&http-password=...")
         layout.addRow("Licht-API-URL:", self.light_edit)
 
+        self.door_edit = QLineEdit(config.get("door_url", ""))
+        self.door_edit.setPlaceholderText("http://ip/cm?cmnd=Power%20On")
+        layout.addRow("Türöffner-URL:", self.door_edit)
+
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -110,6 +118,7 @@ class SettingsDialog(QDialog):
         cfg = dict(self._config)
         cfg["rtsp_url"]  = self.rtsp_edit.text().strip()
         cfg["light_url"] = self.light_edit.text().strip()
+        cfg["door_url"]  = self.door_edit.text().strip()
         return cfg
 
 
@@ -181,6 +190,23 @@ class StreamViewerApp(QMainWindow):
     def light_url(self):
         return self.config.get("light_url", "")
 
+    @property
+    def door_url(self):
+        return self.config.get("door_url", "")
+
+    def _fire_and_forget_get(self, url: str):
+        # HTTP-GET in einem Daemon-Thread, damit die GUI nicht blockiert.
+        if not url:
+            return
+
+        def _worker():
+            try:
+                urllib.request.urlopen(url, timeout=5).close()
+            except Exception:
+                pass  # Fehler nicht stoerend melden
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _is_night(self):
         hour = datetime.now().hour
         return hour >= 20 or hour < 7
@@ -202,20 +228,28 @@ class StreamViewerApp(QMainWindow):
             )
 
     def _send_light_request(self):
-        # Fire-and-forget HTTP-GET in einem Daemon-Thread, damit die GUI
-        # nicht blockiert. Doorbird erwartet hier keinen Browser-Kontext -
-        # User/Passwort stecken als Query-Parameter in der light_url.
-        url = self.light_url
+        # Doorbird erwartet hier keinen Browser-Kontext - User/Passwort
+        # stecken als Query-Parameter in der light_url.
+        self._fire_and_forget_get(self.light_url)
+
+    def open_door(self):
+        # Sicherheitsabfrage, damit die Tuer nicht versehentlich geoeffnet wird.
+        url = self.door_url
         if not url:
+            QMessageBox.information(
+                self, "Türöffner",
+                "Keine Türöffner-URL konfiguriert (⚙ Einstellungen).",
+            )
             return
-
-        def _worker():
-            try:
-                urllib.request.urlopen(url, timeout=5).close()
-            except Exception:
-                pass  # Licht-Fehler nicht stoerend melden
-
-        threading.Thread(target=_worker, daemon=True).start()
+        reply = QMessageBox.question(
+            self,
+            "Tür öffnen",
+            "Tür jetzt öffnen?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if reply == QMessageBox.Yes:
+            self._fire_and_forget_get(url)
 
     def trigger_light(self):
         self._update_light_button_style()
@@ -300,6 +334,14 @@ class StreamViewerApp(QMainWindow):
         self.btn_light = QPushButton()
         self.btn_light.clicked.connect(self.trigger_light)
 
+        self.btn_door = QPushButton("🔓 Tür öffnen")
+        self.btn_door.setStyleSheet(
+            "QPushButton { background-color: #1b5e20; color: white; padding: 8px; "
+            "font-weight: bold; border-radius: 4px; } "
+            "QPushButton:hover { background-color: #2e7d32; }"
+        )
+        self.btn_door.clicked.connect(self.open_door)
+
         self.chk_reconnect = QCheckBox("Auto-Reconnect")
         self.chk_reconnect.setStyleSheet("color: white; font-weight: bold;")
         self.chk_reconnect.setChecked(self.config.get("auto_reconnect", False))
@@ -311,6 +353,7 @@ class StreamViewerApp(QMainWindow):
         control_layout.addWidget(self.chk_reconnect)
         control_layout.addStretch()
         control_layout.addWidget(self.btn_settings)
+        control_layout.addWidget(self.btn_door)
         control_layout.addWidget(self.btn_light)
         control_layout.addWidget(self.btn_fullscreen)
 
