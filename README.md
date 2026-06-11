@@ -1,3 +1,10 @@
+> [!IMPORTANT]
+> **Dieses Repository ist umgezogen und wird auf GitHub nicht mehr gepflegt.**
+> Die aktuelle Version und die weitere Entwicklung gibt es nur noch auf Codeberg:
+> **https://codeberg.org/Flying-Bolt/DoorBirdViewer**
+
+---
+
 # Doorbird RTSP Stream Viewer
 
 Ein schlanker Desktop-Viewer für den RTSP-Videostream einer
